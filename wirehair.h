@@ -48,7 +48,7 @@
 
 // Tweak if the functions are exported or statically linked
 //#define WIREHAIR_DLL /* Defined when building/linking as DLL */
-//#define WIREHAIR_BUILDING /* Defined by the library makefile */
+#define WIREHAIR_BUILDING /* Defined by the library makefile */
 
 #if defined(WIREHAIR_BUILDING)
 # if defined(WIREHAIR_DLL) && defined(_WIN32)
