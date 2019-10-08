@@ -19,8 +19,10 @@
 # An working example in python using the shared lib libwirehair-shared.so .
 # adjust it for your actual lib and remenber you can do much more. Enjoy!!
 
+import os
 import ctypes
-
+import random
+import string
 # Success code
 Wirehair_Success = 0
 
@@ -62,12 +64,42 @@ WirehairResult_Count = 11  # /* for asserts */
 
 WirehairResult_Padding = 0x7fffffff  # /* int32_t padding */
 
-wirehair = ctypes.CDLL("libwirehair-shared.so")  # MSWindows: just remove ".so" part to use DLL
+#wirehair = ctypes.CDLL("libwirehair-shared.so")  # MSWindows: just remove ".so" part to use DLL
+wirehair = ctypes.CDLL(os.path.join(os.getcwd(), "wirehair.dll"))  # MSWindows: just remove ".so" part to use DLL
 
-KPacketSize = ctypes.c_int(32)  # this can be extremaly large 1400 or more! :-)
+pkt_size = 26000
+payload_size = 4 * 1024*1024
+max_lost_pct = 0.12
+max_in_row_lost = 3
+redundancy_factor = 1.3
+
+KPacketSize = ctypes.c_int(pkt_size)  # this can be extremaly large 1400 or more! :-)
+'''
 Message_tmp = b'A working example. this need be minimum o 2*KPacketSize; because this I in filling ' \
               b'more and more words just' \
               b'by the sake of filling... :-)  the real data can be and will be different :-) '
+
+'''
+slice_size = int(payload_size / 5)
+
+#payload_slice = [b'%s' % random.randint(0, 255) for item in range(slice_size)]
+payload_slice = [b'%s' % random.choice(string.ascii_letters) for item in range(slice_size)]
+
+payload = []
+for i in range(int(payload_size/slice_size)):
+    payload.extend(payload_slice)
+
+payload = payload[:payload_size]
+
+#with open('./20190913.498173', 'rb') as fhi:
+#with open('./.77122.1053838', 'rb') as fhi:
+#with open('./third_party.zip', 'rb') as fhi:
+#    payload = ''.join(fhi.readlines())
+
+Message_tmp = ''.join(payload[:payload_size])
+
+#Message_tmp = b'0' * payload_size
+
 
 Message = (ctypes.c_uint8 * len(Message_tmp)).from_buffer_copy(Message_tmp)
 
@@ -97,13 +129,40 @@ if decoder == 0:
 blockid = ctypes.c_uint(0)
 needed = ctypes.c_uint(0)
 
-while True:
+packets_cnt_nominal = int((payload_size/pkt_size)*1.03)  # as per description 3% overhead should guarantee assembly
+packets_cnt = int(packets_cnt_nominal*redundancy_factor)
+
+max_lost_cnt = int(packets_cnt_nominal * max_lost_pct)
+
+lost_cnt = 0
+lost_in_row_cnt = 0
+print("packets cnt: %s" % packets_cnt)
+print("packets cnt nominal: %s" % packets_cnt_nominal)
+print("packets max to loose: %s" % max_lost_cnt)
+for i in range(packets_cnt):
 
     blockid.value += 1
 
     # simulate 10% packet loss
-    if (blockid.value % 10) == 0:
-        continue
+    if random.random() > 0.9:
+        if lost_cnt < max_lost_cnt:
+            if lost_in_row_cnt == 0:
+                print("--\\")
+            lost_cnt += 1
+            lost_in_row_cnt += 1
+            print("  |- DROPPING PACKET %s" % blockid.value)
+            #pass
+            continue
+    if lost_in_row_cnt > 0:
+        if lost_in_row_cnt < max_in_row_lost:
+            if lost_cnt < max_lost_cnt:
+                lost_in_row_cnt += 1
+                if random.random() < 0.5:
+                    lost_cnt += 1
+                    print("  |- DROPPING PACKET in a row %s" % blockid.value)
+                    continue
+        else:
+            lost_in_row_cnt = 0
 
     needed.value += 1
     block = (ctypes.c_uint8 * KPacketSize.value)()
@@ -121,6 +180,11 @@ while True:
     if encodedResult != Wirehair_Success:
         print("Wirehair_encode failed! exiting.")
         exit()
+    elif blockid.value % int(packets_cnt/20) == 0:
+        print("block %s:  %s .. %s" % (blockid.value, ' '.join([str(item) for item in block[:16]]), ' '.join([str(item) for item in block[-16:]])))
+        #print("block %s:  %s" % (blockid.value,  block[:64]))
+    #    print(len(block))
+
 
     decodeResult = wirehair.wirehair_decode(
         decoder,  # Decoder Object
@@ -131,30 +195,44 @@ while True:
 
     if decodeResult == Wirehair_Success:
         # Decoder has enough data to recover now
+        print("completed on packet %s/%s" % (blockid.value, packets_cnt))
+        print("lost %%: %.2f/%.2f" % (float(lost_cnt)*100/packets_cnt, max_lost_pct*100))
         break
 
     if decodeResult != Wirehair_NeedMore:
         print("Wirehair_decode failed: ", decodeResult, " \n")
 
-decoded = (ctypes.c_uint8 * len(Message))()
+
 
 # recover original data on decoder side
-decodeResult = wirehair.wirehair_recover(
-    decoder,
-    ctypes.byref(decoded),
-    ctypes.c_uint64(len(Message))
-)
+for i in range(1):
+    decoded = (ctypes.c_uint8 * len(Message))()
+    decodeResult = wirehair.wirehair_recover(
+        decoder,
+        ctypes.byref(decoded),
+        ctypes.c_uint64(len(Message))
+    )
 
 if decodeResult != 0:
     print("Wirehair_recover failed! exiting.")
     exit()
 
+eita = (ctypes.c_byte * len(Message)).from_buffer_copy(bytearray(decoded[:]))
+
 if decoded[:] == Message[:]:
-    print("msgs are equal")
+    print("OK msgs are equal")
+    print("in:  %s..%s" % (Message_tmp[:10], Message_tmp[-10:]))
+    print("out: %s..%s" % (bytearray(eita)[:10],bytearray(eita)[-10:]))
+else:
+    print("MESSAGE CORRUPTED")
+    # just more for fun
+    #eita = (ctypes.c_byte * len(Message)).from_buffer_copy(bytearray(decoded[:]))
+    #print(bytearray(eita))
+
 
 # just more for fun
-eita = (ctypes.c_byte * len(Message)).from_buffer_copy(bytearray(decoded[:]))
-print(str(eita, "ascii"))
+#eita = (ctypes.c_byte * len(Message)).from_buffer_copy(bytearray(decoded[:]))
+#print(bytearray(eita))
 
 wirehair.wirehair_free(encoder) ## ? are need to "free" from python? maybe not. :-)
 wirehair.wirehair_free(decoder) ## fixme if necessary: if "wirehair.wirehair_free()" are causing trouble, remove they.
